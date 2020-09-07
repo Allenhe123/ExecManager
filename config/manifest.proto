@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package task.proto;
+
+message Task {
+    uint32 id = 1;
+    string exec = 2;
+    string param = 3;
+    uint32 priority = 4;
+    string depends = 5;
+}
+
+message TaskList {
+    repeated Task tasks = 1;
+}
