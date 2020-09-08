@@ -25,6 +25,7 @@ struct ExecTask
     std::string params_{""};
     std::vector<uint32_t> depends_;
     int priority_{0};
+    bool running_{false};
 };
 
 class ExecMgr
@@ -33,12 +34,12 @@ public:
     virtual ~ExecMgr();
     void Init(const std::string& config);
     void ShutDown();
-    int Spawn(const ExecTask& t);
-    bool Kill(const ExecTask& t);
+    int Spawn(ExecTask& t);
+    int Kill(ExecTask& t);
     bool ProcessExist(pid_t pid) const noexcept;
     bool ProcessExist(const ExecTask& t) const noexcept;
     bool Running(uint32_t id) const noexcept;
-    const ExecTask* GetTask(size_t idx) const noexcept;
+    ExecTask* GetTask(size_t idx) noexcept;
     pid_t Wait(pid_t pid);
 
 private:
@@ -48,7 +49,8 @@ private:
     std::string config_;
 
     char** ParseParam(const std::string& param, int& ssize);
-    bool Kill(pid_t pid);
+    // bool Kill(pid_t pid);
+    bool KillDepends(const ExecTask& t);
     pid_t FindPid(const std::string& exec, const std::string& param) const noexcept;
     const ExecTask& FindTask(pid_t pid) const noexcept;
 

@@ -55,14 +55,14 @@ void ExecMgr::Init(const std::string& config) {
 
     printf("PID:%d\n", getpid());
 
-    for( const auto& t : tasks_ ) {
+    for( auto& t : tasks_ ) {
         if (Running(t.id_)) continue;
 
         const auto& v = t.depends_;
         for (auto id : v) {
             if (Running(id)) continue;
 
-            for (const auto& tsk : tasks_) {
+            for (auto& tsk : tasks_) {
                 if (tsk.id_ == id) {
                     if (Spawn(tsk) < 0)
                         printf("spawn %s %s failed\n", tsk.exec_.c_str(), tsk.params_.c_str());
@@ -100,18 +100,23 @@ pid_t ExecMgr::Wait(pid_t pid) {
 }
 
 void ExecMgr::ShutDown() {
-    for (auto pid : pids_) {
-        if (ProcessExist(pid) && !Kill(pid)) {
-            printf("shutdown pid: %d failed\n", pid);
-        } else {
-            printf("shutdown pid: %d success\n", pid);
+    for (auto ite = tasks_.rbegin(); ite != tasks_.rend(); ite++) {
+        uint32_t id = ite->id_;
+        const auto depend = ite->depends_;
+        if (Running(id)) {
+            if (Kill(*ite)) {
+                printf("shutdown task: %d and its depends success\n", id);
+            } else {
+                printf("shutdown task: %d failed\n", id);
+            }
         }
     }
+
     std::this_thread::sleep_for(std::chrono::seconds(5));
     raise(SIGKILL);
 }
 
-int ExecMgr::Spawn(const ExecTask& t) {
+int ExecMgr::Spawn(ExecTask& t) {
     int retcode = 0;
     int sszie = 0;
     auto param = ParseParam(t.params_, sszie);
@@ -126,6 +131,7 @@ int ExecMgr::Spawn(const ExecTask& t) {
         pids_.push_back(fpid);
         runningTasks_.push_back(std::make_pair(t.id_, fpid));
         retcode = fpid;
+        t.running_ = true;
     } else {
         perror("vfork error ");
         retcode = -1;
@@ -157,36 +163,102 @@ char** ExecMgr::ParseParam(const std::string& param, int& ssize) {
     return p;
 }
 
-bool ExecMgr::Kill(const ExecTask& t) {
+int ExecMgr::Kill(ExecTask& t) {
+    int ret_code = 0;
     pid_t pid = FindPid(t.exec_, t.params_);
     if (pid == -1) {
-        return false;
+        ret_code = 0;
     } else {
-        return Kill(pid);
+        if (ProcessExist(pid)) {
+            printf("kill pid: %d\n", pid);
+            if (kill(pid, SIGKILL) == 0) {
+                if (Wait(pid) != -1) {
+                    for (auto ite = pids_.begin(); ite != pids_.end(); ite++) {
+                        if (*ite == pid) {
+                            pids_.erase(ite);
+                            break;
+                        }
+                    }
+                    for (auto ite = runningTasks_.begin(); ite != runningTasks_.end(); ite++) {
+                        if (ite->second == pid) {
+                            runningTasks_.erase(ite);
+                            break;
+                        }
+                    }
+                    t.running_ = false;
+
+                    ret_code = 1;
+                    
+                    KillDepends(t);
+                }
+          
+            } else {
+                printf("send SIGKILL to %d failed\n", pid);
+                ret_code = -1;
+            }
+        }
     }
+    return ret_code;
 }
 
-bool ExecMgr::Kill(pid_t pid) {
-    if (ProcessExist(pid)) {
-        printf("kill pid: %d\n", pid);
-        if (kill(pid, SIGKILL) == 0) {
-            pid_t ret_id = Wait(pid);
-            for (auto ite = pids_.begin(); ite != pids_.end(); ite++) {
-                if (*ite == pid) {
-                    pids_.erase(ite);
+// bool ExecMgr::Kill(pid_t pid) {
+//     if (ProcessExist(pid)) {
+//         printf("kill pid: %d\n", pid);
+//         if (kill(pid, SIGKILL) == 0) {
+//             pid_t ret_id = Wait(pid);
+//             for (auto ite = pids_.begin(); ite != pids_.end(); ite++) {
+//                 if (*ite == pid) {
+//                     pids_.erase(ite);
+//                     break;
+//                 }
+//             }
+//             for (auto ite = runningTasks_.begin(); ite != runningTasks_.end(); ite++) {
+//                 if (ite->second == pid) {
+//                     runningTasks_.erase(ite);
+//                     break;
+//                 }
+//             }
+//             return true;           
+//         } else {
+//             printf("send SIGKILL to %d failed\n", pid);
+//             return false;
+//         }
+//     }
+// }
+
+
+bool ExecMgr::KillDepends(const ExecTask& t) {
+    std::vector<uint32_t> ids;
+    for (auto i : t.depends_) {
+        bool haveOtherDepends = false;
+
+        for (const auto& tsk : tasks_) {
+            if (!tsk.running_) continue;
+
+            if (tsk.id_ == i) {
+                haveOtherDepends = true;
+                break;
+            }
+
+            for (auto j : tsk.depends_) {
+                if (j == i) {
+                    haveOtherDepends = true;
                     break;
                 }
             }
-            for (auto ite = runningTasks_.begin(); ite != runningTasks_.end(); ite++) {
-                if (ite->second == pid) {
-                    runningTasks_.erase(ite);
-                    break;
-                }
-            } 
-            return true;           
-        } else {
-            printf("send SIGKILL to %d failed\n", pid);
-            return false;
+
+            if (haveOtherDepends) break;
+        }
+
+        if (!haveOtherDepends)
+            ids.push_back(i);
+    }
+
+    for (auto k : ids) {
+        for (auto & tsk : tasks_) {
+            if (k == tsk.id_) {
+                Kill(tsk);
+            }
         }
     }
 }
@@ -251,7 +323,7 @@ bool ExecMgr::Running(uint32_t id) const noexcept {
     return running;
 }
 
-const ExecTask* ExecMgr::GetTask(size_t idx) const noexcept {
+ExecTask* ExecMgr::GetTask(size_t idx) noexcept {
     if (idx >=0 && idx < tasks_.size()) return  &tasks_[idx];
     return nullptr;
 }
