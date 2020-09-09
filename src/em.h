@@ -35,21 +35,19 @@ public:
     void Init(const std::string& config);
     void ShutDown();
     int Spawn(ExecTask& t);
-    int Kill(ExecTask& t);
+    bool Kill(ExecTask& t);
     bool ProcessExist(pid_t pid) const noexcept;
     bool ProcessExist(const ExecTask& t) const noexcept;
     bool Running(uint32_t id) const noexcept;
     ExecTask* GetTask(size_t idx) noexcept;
+    size_t TaskCount() const noexcept { return tasks_.size();}
+    size_t RunningTaskCount() const noexcept { return runningTasks_.size();}
     pid_t Wait(pid_t pid);
 
 private:
     std::vector<ExecTask> tasks_;
     std::vector<std::pair<uint32_t, pid_t>> runningTasks_;
-    std::vector<pid_t> pids_;
-    std::string config_;
 
-    char** ParseParam(const std::string& param, int& ssize);
-    // bool Kill(pid_t pid);
     bool KillDepends(const ExecTask& t);
     pid_t FindPid(const std::string& exec, const std::string& param) const noexcept;
     const ExecTask& FindTask(pid_t pid) const noexcept;

@@ -10,11 +10,11 @@
 #include <functional>
 
 #include "manifest.pb.h"
+#include "configMgr.h"
 
 namespace task {
 
 ExecMgr::ExecMgr() {
-    pids_.reserve(100);
     runningTasks_.reserve(100); 
 }
 
@@ -28,15 +28,9 @@ void ExecMgr::SigHandler(int sig) {
 }
 
 void ExecMgr::Init(const std::string& config) {
-    config_ = config;
-
     task::proto::TaskList tasklist;
-    if (file_exist(config_) && apollo::cyber::common::GetProtoFromFile(config_, &tasklist)) {
-        std::cout << "load conf successfully" << std::endl;
-    } else {
-        std::cout << "load conf failed" << std::endl;
-       return;
-    }
+    ConfigMgr confmgr;
+    confmgr.Read(config, tasklist);
 
     for (int j=0; j<tasklist.tasks_size(); j++) {
         auto& tt = tasklist.tasks(j);
@@ -79,9 +73,10 @@ void ExecMgr::Init(const std::string& config) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    printf("pids size: %d\n", pids_.size());
-    for (auto i : pids_) 
-        printf("pid: %d\n", i);
+    printf("running task size: %d\n", runningTasks_.size());
+    for (const auto& rtsk : runningTasks_) {
+        printf("id: %d, pid: %d\n", rtsk.first, rtsk.second);
+    }
 }
 
 pid_t ExecMgr::Wait(pid_t pid) {
@@ -118,17 +113,17 @@ void ExecMgr::ShutDown() {
 
 int ExecMgr::Spawn(ExecTask& t) {
     int retcode = 0;
-    int sszie = 0;
-    auto param = ParseParam(t.params_, sszie);
+    ConfigMgr confmgr;
+    confmgr.ParseParam(t.params_);
+
     pid_t fpid = vfork();
     if (fpid == 0) {
-        int ret = execvp(t.exec_.c_str(), param);
+        int ret = execvp(t.exec_.c_str(), confmgr.Param());
         if (ret < 0) {
             perror( "execvp error " );
             retcode = -1;
         }
     } else if (fpid > 0) {
-        pids_.push_back(fpid);
         runningTasks_.push_back(std::make_pair(t.id_, fpid));
         retcode = fpid;
         t.running_ = true;
@@ -137,48 +132,19 @@ int ExecMgr::Spawn(ExecTask& t) {
         retcode = -1;
     }
 
-    for (int i=0; i<sszie; i++) {
-        if (param[i] != nullptr) {
-            delete []param[i]; 
-            param[i] = nullptr;
-        }
-    }
-    delete []param;
-    param = nullptr;
-
     return retcode;
 }
 
-char** ExecMgr::ParseParam(const std::string& param, int& ssize) {
-    auto vec = split(param, ' ');
-    ssize = vec.size();
-    if (ssize == 0) ssize = 1;
-    char** p = new char*[ssize];
-    int idx = 0;
-    for (const auto& str : vec) {
-        p[idx] = new char[str.size()];
-        std::memcpy(p[idx], str.c_str(), str.size());
-        idx++;
-    }
-    return p;
-}
-
-int ExecMgr::Kill(ExecTask& t) {
-    int ret_code = 0;
+bool ExecMgr::Kill(ExecTask& t) {
+    bool ret = true;
     pid_t pid = FindPid(t.exec_, t.params_);
     if (pid == -1) {
-        ret_code = 0;
+        ret &= true;
     } else {
         if (ProcessExist(pid)) {
             printf("kill pid: %d\n", pid);
             if (kill(pid, SIGKILL) == 0) {
                 if (Wait(pid) != -1) {
-                    for (auto ite = pids_.begin(); ite != pids_.end(); ite++) {
-                        if (*ite == pid) {
-                            pids_.erase(ite);
-                            break;
-                        }
-                    }
                     for (auto ite = runningTasks_.begin(); ite != runningTasks_.end(); ite++) {
                         if (ite->second == pid) {
                             runningTasks_.erase(ite);
@@ -187,47 +153,22 @@ int ExecMgr::Kill(ExecTask& t) {
                     }
                     t.running_ = false;
 
-                    ret_code = 1;
-                    
-                    KillDepends(t);
+                    ret &= KillDepends(t);
+                } else {
+                    ret &= false;    
                 }
-          
             } else {
                 printf("send SIGKILL to %d failed\n", pid);
-                ret_code = -1;
+                ret &= false;
             }
         }
     }
-    return ret_code;
+    return ret;
 }
-
-// bool ExecMgr::Kill(pid_t pid) {
-//     if (ProcessExist(pid)) {
-//         printf("kill pid: %d\n", pid);
-//         if (kill(pid, SIGKILL) == 0) {
-//             pid_t ret_id = Wait(pid);
-//             for (auto ite = pids_.begin(); ite != pids_.end(); ite++) {
-//                 if (*ite == pid) {
-//                     pids_.erase(ite);
-//                     break;
-//                 }
-//             }
-//             for (auto ite = runningTasks_.begin(); ite != runningTasks_.end(); ite++) {
-//                 if (ite->second == pid) {
-//                     runningTasks_.erase(ite);
-//                     break;
-//                 }
-//             }
-//             return true;           
-//         } else {
-//             printf("send SIGKILL to %d failed\n", pid);
-//             return false;
-//         }
-//     }
-// }
 
 
 bool ExecMgr::KillDepends(const ExecTask& t) {
+    bool ret = true;
     std::vector<uint32_t> ids;
     for (auto i : t.depends_) {
         bool haveOtherDepends = false;
@@ -257,10 +198,11 @@ bool ExecMgr::KillDepends(const ExecTask& t) {
     for (auto k : ids) {
         for (auto & tsk : tasks_) {
             if (k == tsk.id_) {
-                Kill(tsk);
+                ret &=Kill(tsk);
             }
         }
     }
+    return ret;
 }
 
 bool ExecMgr::ProcessExist(pid_t pid) const noexcept {
